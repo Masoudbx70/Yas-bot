@@ -79,3 +79,33 @@ app.add_handler(MessageHandler(filters.ALL & ~filters.PHOTO & ~filters.CONTACT, 
 
 if __name__ == "__main__":
     app.run_polling()
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import MessageHandler, filters
+
+# لیست کاربرانی که احراز هویت کردن
+verified_users = set()
+
+# وقتی /start رو می‌زنند، کاربر رو به لیست اضافه می‌کنیم
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    verified_users.add(user_id)  # ثبت کاربر
+    keyboard = [[InlineKeyboardButton("احراز هویت", callback_data="verify")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "سلام این ربات برای احراز هویت شما در پروژه پویان بتن نیشابور طراحی شده و اطلاعات شما محفوظ خواهد ماند",
+        reply_markup=reply_markup
+    )
+
+# چک کردن پیام‌های گروه
+async def group_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in verified_users:
+        keyboard = [[InlineKeyboardButton("احراز هویت", url="https://t.me/hostpuyanbot?start=verify")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "شما احراز هویت در ربات انجام نداده‌اید.\nلطفا دکمه زیر را انتخاب کنید:",
+            reply_markup=reply_markup
+        )
+
+# اضافه کردن هندلر به اپلیکیشن
+app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, group_message_handler))
