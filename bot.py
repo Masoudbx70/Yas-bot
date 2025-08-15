@@ -1,83 +1,87 @@
 import os
 import sqlite3
 from datetime import datetime, timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 )
-from telegram.helpers import mention_html
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
 )
 
-# ================= تنظیمات =================
+# ========== تنظیمات ==========
 TOKEN = os.getenv("BOT_TOKEN")  # توکن از Railway Variables
-ADMIN_ID = 5872842793           # آیدی عددی مدیر
-GROUP_ID = -1002483971970       # آیدی عددی گروه
+ADMIN_ID = 5872842793
+GROUP_ID = -1002483971970
 
-# ================= دیتابیس =================
-conn = sqlite3.connect("users.db", check_same_thread=False)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS members (
-    user_id INTEGER PRIMARY KEY,
-    full_name TEXT,
-    username TEXT,
-    joined TIMESTAMP,
-    verified INTEGER DEFAULT 0,
-    warned INTEGER DEFAULT 0
-)
-""")
-conn.commit()
+# ========== دیتابیس ==========
+def init_db():
+    conn = sqlite3.connect("members.db")
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS members (
+            user_id INTEGER PRIMARY KEY,
+            full_name TEXT,
+            username TEXT,
+            joined_at TEXT,
+            verified INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
 
 def add_member(user_id, full_name, username):
+    conn = sqlite3.connect("members.db")
+    c = conn.cursor()
     c.execute("""
-        INSERT OR REPLACE INTO members (user_id, full_name, username, joined, verified, warned)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (user_id, full_name, username, datetime.now(), 0, 0))
+        INSERT OR REPLACE INTO members (user_id, full_name, username, joined_at, verified)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, full_name, username, datetime.now().isoformat(), 0))
     conn.commit()
+    conn.close()
 
-def set_verified(user_id):
+def verify_member(user_id):
+    conn = sqlite3.connect("members.db")
+    c = conn.cursor()
     c.execute("UPDATE members SET verified = 1 WHERE user_id = ?", (user_id,))
     conn.commit()
+    conn.close()
 
-def get_unverified():
-    c.execute("SELECT user_id, full_name, joined, warned FROM members WHERE verified = 0")
-    return c.fetchall()
+def get_unverified_members():
+    conn = sqlite3.connect("members.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, full_name, joined_at FROM members WHERE verified = 0")
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
-def delete_member(user_id):
+def remove_member(user_id):
+    conn = sqlite3.connect("members.db")
+    c = conn.cursor()
     c.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
     conn.commit()
+    conn.close()
 
-# ================= شروع کاربر =================
+# ========== وضعیت موقت احراز هویت ==========
+user_states = {}
+
+# ========== هندلرها ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("احراز هویت", callback_data="verify")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "سلام، این ربات برای احراز هویت شما طراحی شده و اطلاعات شما محفوظ خواهد ماند.",
+        "سلام! لطفاً برای احراز هویت روی دکمه زیر کلیک کنید 👇",
         reply_markup=reply_markup
     )
-
-# ================= کلیک روی دکمه احراز هویت =================
-user_states = {}
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "verify":
         user_states[query.from_user.id] = "ASK_NAME"
-        await query.message.reply_text("نام شما چیست؟")
+        await query.message.reply_text("نام و نام خانوادگی خود را وارد کنید:")
 
-# ================= دریافت نام =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text
@@ -86,14 +90,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_states.get(user_id) == "ASK_NAME":
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"🆔 {user.id}\n👤 نام: {text}\nنام کاربری: @{user.username or 'ندارد'}"
+            text=f"👤 {text}\n🆔 {user.id}\n📛 نام کاربری: @{user.username or 'ندارد'}"
         )
         user_states[user_id] = "ASK_PHONE"
-        keyboard = [[KeyboardButton("ارسال شماره تماس", request_contact=True)]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        await update.message.reply_text("📞 شماره تماس خود را ارسال کنید", reply_markup=reply_markup)
+        keyboard = [[KeyboardButton("📞 ارسال شماره تماس", request_contact=True)]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("شماره تماس خود را ارسال کنید:", reply_markup=reply_markup)
 
-# ================= دریافت شماره =================
+    elif user_states.get(user_id) == "ASK_PHONE":
+        await update.message.reply_text("لطفاً شماره خود را از دکمه ارسال شماره تماس بفرستید.")
+
 async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     contact = update.message.contact
@@ -102,14 +108,11 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_states.get(user_id) == "ASK_PHONE":
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"📞 شماره تماس {user.full_name}: {contact.phone_number}"
+            text=f"☎️ شماره تماس {user.full_name}: {contact.phone_number}"
         )
         user_states[user_id] = "ASK_PHOTO"
-        await update.message.reply_text(
-            "📷 لطفاً اسکرین شات مربوط به قسمت پروژه را ارسال کنید."
-        )
+        await update.message.reply_text("📷 لطفاً عکس اسکرین‌ شات پروژه را ارسال کنید:")
 
-# ================= دریافت عکس =================
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = update.message.from_user
@@ -121,14 +124,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=photo_file,
             caption=f"📷 عکس از {user.full_name} (@{user.username or 'ندارد'})"
         )
+        verify_member(user_id)
         user_states.pop(user_id, None)
-        set_verified(user_id)
 
         keyboard = [[InlineKeyboardButton("ورود به گروه", url="https://t.me/+gZ6LwhT4cQpmYWJk")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("✅ احراز هویت با موفقیت انجام شد.", reply_markup=reply_markup)
 
-# ================= عضو جدید =================
 async def track_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         add_member(member.id, member.full_name, member.username)
@@ -137,41 +139,42 @@ async def track_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"👋 {member.full_name} خوش آمدید! لطفاً ظرف ۳ روز آینده در ربات احراز هویت کنید."
         )
 
-# ================= چک روزانه =================
+# چک روزانه
 async def daily_check(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
-    for user_id, full_name, joined, warned in get_unverified():
-        days_in_group = (now - datetime.fromisoformat(joined)).days
+    for user_id, full_name, joined_at in get_unverified_members():
+        join_time = datetime.fromisoformat(joined_at)
+        days_in_group = (now - join_time).days
+
         if days_in_group < 3:
             await context.bot.send_message(
                 chat_id=GROUP_ID,
-                text=f"⚠️ {mention_html(user_id, full_name)} هنوز احراز هویت نکرده!",
+                text=f"⚠️ <a href='tg://user?id={user_id}'>{full_name}</a> هنوز احراز هویت نکرده!",
                 parse_mode="HTML"
             )
         else:
-            try:
-                await context.bot.ban_chat_member(GROUP_ID, user_id)
-                await context.bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=f"⛔ {mention_html(user_id, full_name)} به دلیل عدم احراز هویت حذف شد.",
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                print(f"Ban error: {e}")
-            delete_member(user_id)
+            await context.bot.ban_chat_member(GROUP_ID, user_id)
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=f"⛔ <a href='tg://user?id={user_id}'>{full_name}</a> به دلیل عدم احراز هویت حذف شد.",
+                parse_mode="HTML"
+            )
+            remove_member(user_id)
 
-# ================= اجرای ربات =================
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message))
-app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
-
-# اجرای چک روزانه هر 24 ساعت
-app.job_queue.run_repeating(daily_check, interval=86400, first=10)
-
+# ========== اجرای ربات ==========
 if __name__ == "__main__":
+    init_db()
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_click))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(daily_check, "interval", days=1, args=[app])
+    scheduler.start()
+
     app.run_polling()
