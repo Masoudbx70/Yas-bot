@@ -69,7 +69,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ارسال عکس به ادمین
         await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo, caption=caption)
 
-        await update.message.reply_text("✅ اطلاعات شما ثبت شد. سپاس 🙏")
+        # دکمه شیشه‌ای برای لینک گروه
+        group_button = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📎 لینک گروه", url="https://t.me/+gZ6LwhT4cQpmYWJk")]]
+        )
+
+        await update.message.reply_text(
+            "✅ اطلاعات شما ثبت شد. سپاس 🙏\n\nبرای عضویت در گروه روی دکمه زیر کلیک کنید:",
+            reply_markup=group_button
+        )
+
         user_states.pop(user_id, None)
 
 # ساخت برنامه
