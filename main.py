@@ -1,21 +1,22 @@
 import os
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 5872842793
-WEBHOOK_URL = f"https://{os.getenv('RAILWAY_STATIC_URL')}/{TOKEN}"
 
 user_states = {}
-app_tg = ApplicationBuilder().token(TOKEN).build()
 
+# /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("احراز هویت", callback_data="verify")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    welcome_text = "سلام این ربات برای احراز هویت شما در پروژه پویان بتن نیشابور طراحی شده و اطلاعات شما محفوظ خواهد ماند"
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        "سلام این ربات برای احراز هویت شما در پروژه پویان بتن نیشابور طراحی شده و اطلاعات شما محفوظ خواهد ماند",
+        reply_markup=reply_markup
+    )
 
+# دکمه احراز هویت
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -23,29 +24,55 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[query.from_user.id] = "ASK_NAME"
         await query.message.reply_text("نام شما چیست؟")
 
+# دریافت پیام
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text
+
+    # مرحله ۱: دریافت نام
     if user_states.get(user_id) == "ASK_NAME":
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"نام کاربر {user_id}: {text}")
-        await update.message.reply_text("اطلاعات شما ثبت شد ✅")
+        user_states[user_id] = {"name": text, "step": "ASK_PHONE"}
+        contact_button = KeyboardButton("📱 ارسال شماره تماس", request_contact=True)
+        reply_markup = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text("شماره تماس خود را ارسال کنید:", reply_markup=reply_markup)
+
+    # مرحله ۳: سوال بعدی
+    elif user_states.get(user_id, {}).get("step") == "ASK_EXTRA":
+        user_states[user_id]["extra_info"] = text
+        data = user_states[user_id]
+        user = update.message.from_user
+        info = (
+            f"📌 اطلاعات کاربر:\n"
+            f"🆔 ID: {user.id}\n"
+            f"👤 نام: {user.first_name or '—'}\n"
+            f"👥 نام خانوادگی: {user.last_name or '—'}\n"
+            f"💬 نام کاربری: @{user.username if user.username else '—'}\n"
+            f"🌐 زبان: {user.language_code or '—'}\n"
+            f"🔗 لینک پروفایل: tg://user?id={user.id}\n"
+            f"✏️ نام وارد شده: {data['name']}\n"
+            f"📱 شماره تماس: {data['phone']}\n"
+            f"📝 اطلاعات اضافه: {data['extra_info']}"
+        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=info)
+        await update.message.reply_text("✅ تمام اطلاعات شما ثبت شد.")
         user_states.pop(user_id, None)
 
-app_tg.add_handler(CommandHandler("start", start))
-app_tg.add_handler(CallbackQueryHandler(button_click))
-app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# دریافت شماره تماس
+async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    phone_number = update.message.contact.phone_number
+    if user_states.get(user_id, {}).get("step") == "ASK_PHONE":
+        user_states[user_id]["phone"] = phone_number
+        user_states[user_id]["step"] = "ASK_EXTRA"
+        await update.message.reply_text("✅ شماره تماس شما ثبت شد.\nحالا سوال سوم: محل کار یا توضیحات خود را وارد کنید:")
 
-flask_app = Flask(__name__)
+# اجرای ربات
+app = ApplicationBuilder().token(TOKEN).build()
 
-@flask_app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), app_tg.bot)
-    app_tg.update_queue.put(update)
-    return "OK", 200
-
-@flask_app.before_first_request
-def set_webhook():
-    app_tg.bot.set_webhook(WEBHOOK_URL)
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button_click))
+app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run_polling()
