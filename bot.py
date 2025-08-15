@@ -1,6 +1,6 @@
 import os
-from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import sqlite3
+from datetime import datetime, timedelta
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -8,6 +8,7 @@ from telegram import (
     KeyboardButton,
     ReplyKeyboardMarkup
 )
+from telegram.helpers import mention_html
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,27 +18,57 @@ from telegram.ext import (
     filters
 )
 
-# ========== تنظیمات ==========
-TOKEN = os.getenv("BOT_TOKEN")  # توکن رو از Railway Variables می‌گیره
-ADMIN_ID = 5872842793           # آی‌دی عددی مدیر
-GROUP_ID = --1002483971970      # آیدی عددی گروه (تغییر بده)
+# ================= تنظیمات =================
+TOKEN = os.getenv("BOT_TOKEN")  # توکن از Railway Variables
+ADMIN_ID = 5872842793           # آیدی عددی مدیر
+GROUP_ID = -1002483971970       # آیدی عددی گروه
 
-# ========== متغیرهای ذخیره ==========
-user_states = {}      # وضعیت کاربران در احراز هویت
-group_members = {}    # اطلاعات اعضای گروه
+# ================= دیتابیس =================
+conn = sqlite3.connect("users.db", check_same_thread=False)
+c = conn.cursor()
+c.execute("""
+CREATE TABLE IF NOT EXISTS members (
+    user_id INTEGER PRIMARY KEY,
+    full_name TEXT,
+    username TEXT,
+    joined TIMESTAMP,
+    verified INTEGER DEFAULT 0,
+    warned INTEGER DEFAULT 0
+)
+""")
+conn.commit()
 
-# ================================
-# 1. شروع کاربر
-# ================================
+def add_member(user_id, full_name, username):
+    c.execute("""
+        INSERT OR REPLACE INTO members (user_id, full_name, username, joined, verified, warned)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, full_name, username, datetime.now(), 0, 0))
+    conn.commit()
+
+def set_verified(user_id):
+    c.execute("UPDATE members SET verified = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+def get_unverified():
+    c.execute("SELECT user_id, full_name, joined, warned FROM members WHERE verified = 0")
+    return c.fetchall()
+
+def delete_member(user_id):
+    c.execute("DELETE FROM members WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+# ================= شروع کاربر =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("احراز هویت", callback_data="verify")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    welcome_text = "سلام این ربات برای احراز هویت شما در پروژه پویان بتن نیشابور طراحی شده و اطلاعات شما محفوظ خواهد ماند"
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        "سلام، این ربات برای احراز هویت شما طراحی شده و اطلاعات شما محفوظ خواهد ماند.",
+        reply_markup=reply_markup
+    )
 
-# ================================
-# 2. کلیک روی دکمه احراز هویت
-# ================================
+# ================= کلیک روی دکمه احراز هویت =================
+user_states = {}
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -46,32 +77,23 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[query.from_user.id] = "ASK_NAME"
         await query.message.reply_text("نام شما چیست؟")
 
-# ================================
-# 3. پردازش پیام‌ها
-# ================================
+# ================= دریافت نام =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     text = update.message.text
     user = update.message.from_user
 
     if user_states.get(user_id) == "ASK_NAME":
-        # ارسال جواب کاربر به مدیر
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"🆔 {user.id}\n👤 نام: {text}\nنام کاربری: @{user.username or 'ندارد'}"
         )
-        # مرحله بعد: شماره تلفن
         user_states[user_id] = "ASK_PHONE"
         keyboard = [[KeyboardButton("ارسال شماره تماس", request_contact=True)]]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         await update.message.reply_text("📞 شماره تماس خود را ارسال کنید", reply_markup=reply_markup)
 
-    elif user_states.get(user_id) == "ASK_PHONE":
-        await update.message.reply_text("⚠️ لطفاً از دکمه ارسال شماره تماس استفاده کنید.")
-
-# ================================
-# 4. دریافت شماره تلفن
-# ================================
+# ================= دریافت شماره =================
 async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     contact = update.message.contact
@@ -82,15 +104,12 @@ async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=ADMIN_ID,
             text=f"📞 شماره تماس {user.full_name}: {contact.phone_number}"
         )
-        # مرحله بعد: ارسال تصویر
         user_states[user_id] = "ASK_PHOTO"
         await update.message.reply_text(
-            "📷 لطفاً اسکرین شات مربوط به قسمت پروژه در سایت مسکن ملی را ارسال کنید."
+            "📷 لطفاً اسکرین شات مربوط به قسمت پروژه را ارسال کنید."
         )
 
-# ================================
-# 5. دریافت تصویر
-# ================================
+# ================= دریافت عکس =================
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user = update.message.from_user
@@ -102,78 +121,57 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=photo_file,
             caption=f"📷 عکس از {user.full_name} (@{user.username or 'ندارد'})"
         )
-        user_states.pop(user_id, None)  # پاک کردن وضعیت
-        mark_verified(user_id)  # ثبت احراز هویت در گروه
+        user_states.pop(user_id, None)
+        set_verified(user_id)
 
-        # دکمه لینک گروه
-        keyboard = [[InlineKeyboardButton("لینک گروه", url="https://t.me/+gZ6LwhT4cQpmYWJk")]]
+        keyboard = [[InlineKeyboardButton("ورود به گروه", url="https://t.me/+gZ6LwhT4cQpmYWJk")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("✅ احراز هویت با موفقیت انجام شد.", reply_markup=reply_markup)
 
-# اگر کاربر به جای عکس متن فرستاد
-async def handle_non_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_states.get(user_id) == "ASK_PHOTO":
-        await update.message.reply_text("⚠️ لطفاً فقط عکس ارسال کنید.")
-
-# ================================
-# 6. مدیریت اعضای گروه
-# ================================
+# ================= عضو جدید =================
 async def track_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
-        group_members[member.id] = {
-            "joined": datetime.now(),
-            "warned": 0,
-            "verified": False
-        }
+        add_member(member.id, member.full_name, member.username)
         await context.bot.send_message(
             chat_id=GROUP_ID,
             text=f"👋 {member.full_name} خوش آمدید! لطفاً ظرف ۳ روز آینده در ربات احراز هویت کنید."
         )
 
-# ثبت احراز هویت
-def mark_verified(user_id):
-    if user_id in group_members:
-        group_members[user_id]["verified"] = True
-
-# چک روزانه
+# ================= چک روزانه =================
 async def daily_check(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
-    for user_id, data in list(group_members.items()):
-        if not data["verified"]:
-            days_in_group = (now - data["joined"]).days
-            if days_in_group < 3:
-                await context.bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=f"⚠️ <a href='tg://user?id={user_id}'>کاربر</a> هنوز احراز هویت نکرده!",
-                    parse_mode="HTML"
-                )
-            else:
+    for user_id, full_name, joined, warned in get_unverified():
+        days_in_group = (now - datetime.fromisoformat(joined)).days
+        if days_in_group < 3:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=f"⚠️ {mention_html(user_id, full_name)} هنوز احراز هویت نکرده!",
+                parse_mode="HTML"
+            )
+        else:
+            try:
                 await context.bot.ban_chat_member(GROUP_ID, user_id)
                 await context.bot.send_message(
                     chat_id=GROUP_ID,
-                    text=f"⛔ <a href='tg://user?id={user_id}'>کاربر</a> به دلیل عدم احراز هویت حذف شد.",
+                    text=f"⛔ {mention_html(user_id, full_name)} به دلیل عدم احراز هویت حذف شد.",
                     parse_mode="HTML"
                 )
-                group_members.pop(user_id, None)
+            except Exception as e:
+                print(f"Ban error: {e}")
+            delete_member(user_id)
 
-# ================================
-# 7. اجرای ربات
-# ================================
+# ================= اجرای ربات =================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button_click))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message))
 app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
 app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_non_photo))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_new_member))
 
-# زمان‌بندی چک روزانه
-scheduler = AsyncIOScheduler()
-scheduler.add_job(daily_check, "interval", days=1, args=[app])
-scheduler.start()
+# اجرای چک روزانه هر 24 ساعت
+app.job_queue.run_repeating(daily_check, interval=86400, first=10)
 
 if __name__ == "__main__":
     app.run_polling()
